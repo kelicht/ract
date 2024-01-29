@@ -1,6 +1,6 @@
 import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin
-from ract.utils import apply, region, compute_loss, split_sort_idx, minimum_set_cover, find_best_actions
+from ract.utils import MIN_VAL, MAX_VAL, export_mermaid, apply, region, compute_loss, split_sort_idx, minimum_set_cover, find_best_actions
 
 
 class Tree:
@@ -86,6 +86,43 @@ class RecourseTreeClassifier(BaseEstimator, ClassifierMixin):
                     print('\t' * h + '- Else:')
                     rec(self.tree_.children_right[j], h+1)
         rec(self.tree_.node_count-1, 0)
+
+    def to_mermaid(self, top_down=False):
+            
+        s = """graph {}; """.format('TD' if top_down else 'LR')
+
+        for n in range(self.tree_.node_count-1, -1, -1):
+            d, b = self.tree_.feature[n], self.tree_.threshold[n]    
+            if d < 0:
+                y = self.tree_.label[n]
+                s += """N{}[["{}: <b>{}</b>""".format(n, self.action.target_name, self.action.class_names[y])
+                s += """ ({:.1%})"]]; """.format(self.tree_.value[n, y]/self.tree_.n_node_samples[n])
+            else:
+                if self.action.feature_types[d] == 'B':
+                    if ':' in self.action.feature_names[d]:
+                        prv, nxt = self.action.feature_names[d].split(':')
+                        s += """N{}([{} = {}]); """.format(n, prv, nxt)
+                    else:
+                        s += """N{}([{}]); """.format(n, self.action.feature_names[d])                        
+                elif self.action.feature_types[d] == 'I':
+                    s += """N{}([{} <= {}]); """.format(n, self.action.feature_names[d], int(b))
+                else:
+                    s += """N{}([{} <= {:.4}]); """.format(n, self.action.feature_names[d], b)
+        
+        for n in range(self.tree_.node_count-1, -1, -1):
+            n_left, n_right = self.tree_.children_left[n], self.tree_.children_right[n]
+            if n_left >= 0 and n_right >= 0:
+                if self.action.feature_types[self.tree_.feature[n]] == 'B':
+                    s += """N{} -- True --> N{}; """.format(n, n_right)
+                    s += """N{} -. False .-> N{}; """.format(n, n_left)
+                else:
+                    s += """N{} -- True --> N{}; """.format(n, n_left)
+                    s += """N{} -. False .-> N{}; """.format(n, n_right)
+
+        return s
+
+    def draw_tree(self, top_down=False):
+        export_mermaid(self.to_mermaid(top_down))
 
     def fit(self, X, y):
         self.tree_ = Tree(self.max_depth)

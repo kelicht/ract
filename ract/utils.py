@@ -1,9 +1,19 @@
 import numpy as np
 import numba
+import base64
+from IPython.display import Image, display
+import matplotlib.pyplot as plt
+
 
 MIN_VAL = - 1e+8
 MAX_VAL =   1e+8
 
+
+def export_mermaid(graph):
+  graphbytes = graph.encode("ascii")
+  base64_bytes = base64.b64encode(graphbytes)
+  base64_string = base64_bytes.decode("ascii")
+  display(Image(url="https://mermaid.ink/img/" + base64_string))
 
 @numba.njit("int64[:](float64[:, :], int64[:], float64[:], int64[:], int64[:], int64)", parallel=True, cache=True)
 def apply(X, feature, threshold, children_left, children_right, j0):
