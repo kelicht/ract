@@ -160,7 +160,7 @@ def compute_candidate_actions(X, thresholds, feature_types):
                 elif feature_types[d] == 2:
                     A[i, j, 1] = int(b) - X[i, d] + 1.0
                 else:
-                    A[i, j, 1] = b - X[i, d] + 1e-6
+                    A[i, j, 1] = b - X[i, d] + 1e-8
             else:
                 if feature_types[d] == 1:
                     A[i, j, 1] = - 1.0
@@ -223,3 +223,12 @@ def find_best_actions(X, A, F, C):
                 CA[i, 1:] = A[i, l]
                 C_opt[i] = C[i, l]
     return CA
+
+@numba.njit("int64[:, :](float64[:], float64[:, :], float64[:, :, :])", parallel=True, cache=True)
+def compute_action_indicators(x, A, regions):
+    I_t = np.zeros((regions.shape[0], A.shape[0]), dtype=np.int64)
+    for l in numba.prange(regions.shape[0]):
+        for j in numba.prange(A.shape[0]):
+            if (x[int(A[j, 0])] + A[j, 1] > regions[l, int(A[j, 0]), 0]) and (x[int(A[j, 0])] + A[j, 1] <= regions[l, int(A[j, 0]), 1]):
+                I_t[l, j] = 1
+    return I_t

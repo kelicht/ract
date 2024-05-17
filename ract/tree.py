@@ -212,16 +212,17 @@ class RecourseTreeClassifier(BaseEstimator, ClassifierMixin):
             return node_idx, obj_prev, losses, n_valid_leaves
 
         label_left, label_right = int(result[j, 4]), int(result[j, 5])
-        is_in_left = is_in * (X[:, feature] <= threshold)
-        is_in_right = is_in * (X[:, feature] > threshold)
+        is_branch = (X[:, feature] <= threshold)
+        is_in_left = is_in * is_branch
+        is_in_right = is_in * (~is_branch)
         sort_idx_left = np.zeros((np.sum(idx), sort_idx.shape[1]), dtype=int)
         sort_idx_right = np.zeros((np.sum(~idx), sort_idx.shape[1]), dtype=int)
         split_sort_idx(X, feature, threshold, sort_idx, sort_idx_left, sort_idx_right)
 
         losses[is_in_left] = (y[is_in_left] != label_left)
         losses[is_in_right] = (y[is_in_right] != label_right)
-        is_reach_left = is_reach * np.maximum(is_in_left.astype(np.int64), is_flip[:, j])
-        is_reach_right = is_reach * np.maximum(is_in_right.astype(np.int64), is_flip[:, j])
+        is_reach_left = is_reach * np.maximum(is_branch.astype(np.int64), is_flip[:, j])
+        is_reach_right = is_reach * np.maximum((~is_branch).astype(np.int64), is_flip[:, j])
         n_valid_leaves = n_valid_leaves - (label == self.action.y_target) * is_reach + (label_left == self.action.y_target) * is_reach_left + (label_right == self.action.y_target) * is_reach_right
         
         children_left, obj, losses, n_valid_leaves = self._fit_recursive(X, y, y_counts, label_left, obj, sort_idx_left, sort_idx_all, is_in_left, thresholds, depth-1, 
@@ -248,8 +249,9 @@ class RecourseTreeClassifier(BaseEstimator, ClassifierMixin):
     def relabel(self, delta):
         leaves = np.array([ j for j in range(self.tree_.node_count) if self.tree_.feature[j] < 0 ])
         is_covered = self.tree_.is_reachable[leaves]
-        loss_grad = np.array([(self.tree_.n_node_samples[j] - self.tree_.value[j, self.action.y_target]) / self.n_samples_ for j in leaves], dtype=np.float64)
+        loss_grad = np.array([(self.tree_.n_node_samples[j] - self.tree_.value[j, self.action.y_target]) for j in leaves], dtype=np.float64)
         
+        self.tree_.label = np.argmax(self.tree_.value, axis=1)
         initial_solution = np.array([self.tree_.label[j] == self.action.y_target for j in leaves], dtype=np.bool_)
         is_selected = minimum_set_cover(delta, initial_solution, is_covered, loss_grad)
         self.tree_.label[leaves[is_selected]] = self.action.y_target
@@ -273,7 +275,7 @@ class RecourseTreeClassifier(BaseEstimator, ClassifierMixin):
 
         leaves = np.array([ j for j in range(self.tree_.node_count) if (self.tree_.feature[j] < 0) and self.tree_.label[j] == self.action.y_target ])
 
-        A, C, F = self.action.enumerate_actions(X, self.regions_[leaves], cost_type, max_change_features)
+        A, C, F = self.action.enumerate_actions(X, self.regions_[leaves], cost_type, max_change_features, spacer=False)
         if self.action.causal:
             A_causal = A + self.action.do_intervention(np.concatenate(A, axis=0)).reshape(A.shape)
             F = F * (self.predict(np.repeat(X, A.shape[1], axis=0) + np.concatenate(A_causal, axis=0)) == self.action.y_target).reshape(F.shape)

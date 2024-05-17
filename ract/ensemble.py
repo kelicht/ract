@@ -2,8 +2,13 @@ import numpy as np
 from scipy.special import comb
 from sklearn.ensemble import BaggingClassifier
 from ract.tree import RecourseTreeClassifier
-from ract.utils import find_best_actions
+from ract.utils import find_best_actions, compute_action_indicators
 
+try:
+    import gurobipy
+    HAS_GRB = True
+except:
+    HAS_GRB = False
 
 
 class BaseRecourseEnsemble():
@@ -117,6 +122,67 @@ class BaseRecourseEnsemble():
         }
         return results
     
+    
+    def _get_thresholds(self):
+        thresholds = []
+        feature_pointer = [ 0 ]
+        for d in range(self.action.n_features):
+            thresholds_d = []
+            for n_estimator in range(self.n_estimators):
+                thresholds_d += self.estimators_[n_estimator].tree_.threshold[self.estimators_[n_estimator].tree_.feature == d].tolist()
+            thresholds_d = sorted(list(set(thresholds_d)))
+            if len(thresholds_d) > 0:
+                thresholds.append(list(zip([d] * len(thresholds_d), thresholds_d)))
+            feature_pointer.append(feature_pointer[-1] + len(thresholds_d))
+        thresholds = np.concatenate(thresholds, axis=0)
+        return thresholds, feature_pointer
+    
+    def _get_regions_and_labels(self):
+        regions = []
+        labels = []
+        tree_pointer = [ 0 ]
+        for estimator in self.estimators_:
+            leaves = np.array([ j for j in range(estimator.tree_.node_count) if estimator.tree_.feature[j] < 0])
+            if len(leaves) == 0: continue
+            regions.append(estimator.regions_[leaves])
+            labels.append((estimator.tree_.label[leaves] == self.action.y_target).astype(np.int64))            
+            tree_pointer.append(tree_pointer[-1] + len(leaves))
+        regions = np.concatenate(regions, axis=0)
+        labels = np.concatenate(labels, axis=0)
+        return regions, labels, tree_pointer
+    
+    def _get_milo_model(self, x, A, C, I, labels, max_change_features, confidence):
+        return 
+    
+    def explain_exact_action(self, x,
+                             max_change_features=-1, confidence=-1, time_limit=60):
+        
+        X = x.reshape(1, -1)
+
+        if confidence < 0:
+            confidence = 0.5       
+
+        thresholds, feature_pointer = self._get_thresholds()
+        A = self.action._get_action(X, thresholds)
+        C = self.action._get_cost(X, A, feature_pointer)
+        A = A[0]; C = C[0]; 
+        A_ins = np.zeros((A.shape[0] + self.action.n_features, A.shape[1]), dtype=np.float64)
+        C_ins = np.zeros(A_ins.shape[0], dtype=np.float64)
+        for d in range(self.action.n_features):
+            A_ins[(feature_pointer[d]+d), 0] = d
+            A_ins[(feature_pointer[d]+d+1):(feature_pointer[d+1]+d+1)] = A[feature_pointer[d]:feature_pointer[d+1]]    
+            C_ins[feature_pointer[d]+d+1:feature_pointer[d+1]+d+1] = C[feature_pointer[d]:feature_pointer[d+1]]            
+        A = A_ins[C_ins != np.inf]; C = C_ins[C_ins != np.inf]; 
+        
+        regions, labels, tree_pointer = self._get_regions_and_labels()
+        I = []
+        for t in range(self.n_estimators):
+            regions_t = regions[tree_pointer[t]:tree_pointer[t+1]]
+            I_t = compute_action_indicators(x, A, regions_t)
+            I.append(I_t)
+                    
+        return A, C, I
+
 
 
 class RecourseForestClassifier(BaggingClassifier, BaseRecourseEnsemble):

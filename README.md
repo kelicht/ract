@@ -1,6 +1,6 @@
 # RACT: Recourse-Aware Classification Tree
 
-A temporary repository for our paper "Learning Decision Trees and Forests with Algorithmic Recourse."
+A temporary repository for our ICML-24 paper "Learning Decision Trees and Forests with Algorithmic Recourse." 
 
 ## Usage
 A demonstration is provided in `demo.ipynb`. 
