@@ -5,7 +5,8 @@ from ract.tree import RecourseTreeClassifier
 from ract.utils import find_best_actions, compute_action_indicators
 
 try:
-    import gurobipy
+    import gurobipy as gp
+    import os, contextlib
     HAS_GRB = True
 except:
     HAS_GRB = False
@@ -152,15 +153,73 @@ class BaseRecourseEnsemble():
         return regions, labels, tree_pointer
     
     def _get_milo_model(self, x, A, C, I, labels, max_change_features, confidence):
-        return 
+
+        n_features = self.action.n_features
+        As = [A[A[:, 0] == d] for d in range(n_features)]
+        Cs = [C[A[:, 0] == d] for d in range(n_features)]
+        J = [len(A_d) for A_d in As]
+        lb = [min(A_d[:, 1]) for A_d in As]
+        ub = [max(A_d[:, 1]) for A_d in As]
+        L = [I_t.shape[0] for I_t in I]
+
+        with contextlib.redirect_stdout(open(os.devnull, 'w')): model = gp.Model()
+        def LinSum(Vars): return gp.LinExpr([1]*len(Vars), Vars)        
+        def flatten(x): return sum(x, [])
+
+        act = [
+            model.addVar(name='act_{:04d}'.format(d), vtype=gp.GRB.CONTINUOUS, lb=lb[d], ub=ub[d]) for d in range(n_features)
+        ] 
+        pi = [
+            [model.addVar(name='pi_{:04d}_{:04d}'.format(d, j), vtype=gp.GRB.BINARY) for j in range(J[d])] for d in range(n_features)
+        ] 
+        cost = model.addVar(name='cost', vtype=gp.GRB.CONTINUOUS, lb=0)
+        phi  = [
+            [model.addVar(name='phi_{:04d}_{:04d}'.format(t, l), vtype=gp.GRB.BINARY) for l in range(L[t])] for t in range(self.n_estimators) 
+        ] 
+
+        model.setObjective(cost, gp.GRB.MINIMIZE)
+        if self.action.cost_type == 'MPS':
+            for d in range(n_features):
+                if (d in flatten(self.action.feature_categories) and np.min(As[d][:, 1]) < 0) or self.action.feature_constraints[d] == 'F':
+                    continue
+                model.addConstr(cost - gp.LinExpr(Cs[d], pi[d]) >= 0, name='C_cost_{:04d}'.format(d))
+        else:
+            model.addConstr(cost - gp.LinExpr(C, flatten(pi)) == 0, name='C_cost')
+
+        for d in range(n_features): 
+            model.addConstr(LinSum(pi[d]) == 1, name='C_basic_pi_{:04d}'.format(d))
+            model.addConstr(act[d] - gp.LinExpr(As[d][:, 1], pi[d]) == 0, name='C_basic_act_{:04d}'.format(d))
+
+        nonzeros = (A[:, 1] != 0)
+        model.addConstr(gp.LinExpr(nonzeros, flatten(pi)) <= max_change_features, name='C_basic_sparsity')
+
+        for i, G in enumerate(self.action.feature_categories): 
+            model.addConstr(LinSum([act[d] for d in G]) == 0, name='C_basic_category_{:04d}'.format(i))
+
+        model.addConstr(gp.LinExpr(labels, flatten(phi)) >= self.n_estimators * (confidence + 1e-8), name='C_loss')
+
+        for t in range(self.n_estimators):
+            model.addConstr(LinSum(phi[t]) == 1, name='C_forest_leaf_{:04d}'.format(t))
+            for l in range(L[t]):
+                model.addConstr(n_features * phi[t][l] - gp.LinExpr(I[t][l], flatten(pi)) <= 0, name='C_forest_decision_{:04d}_{:04d}'.format(t, l))
+        
+        self.variables_ = {}
+        self.variables_['act'] = act
+        self.variables_['pi'] = pi
+        self.variables_['cost'] = cost
+        self.variables_['phi'] = phi
+
+        return model
     
     def explain_exact_action(self, x,
-                             max_change_features=-1, confidence=-1, time_limit=60):
+                             max_change_features=-1, confidence=-1, time_limit=60, verbose=False):
         
         X = x.reshape(1, -1)
 
         if confidence < 0:
             confidence = 0.5       
+        if max_change_features < 0:
+            max_change_features = self.action.n_features
 
         thresholds, feature_pointer = self._get_thresholds()
         A = self.action._get_action(X, thresholds)
@@ -180,8 +239,45 @@ class BaseRecourseEnsemble():
             regions_t = regions[tree_pointer[t]:tree_pointer[t+1]]
             I_t = compute_action_indicators(x, A, regions_t)
             I.append(I_t)
+
+        model = self._get_milo_model(x, A, C, I, labels, max_change_features, confidence)
+        model.params.outputflag = int(verbose)
+        model.params.timelimit = time_limit
+        model.optimize()
+        self.time_ = model.runtime
+
+        As = [A[A[:, 0] == d] for d in range(self.action.n_features)]
+        try:
+            a = np.array([ np.sum([a * round(p.X) for p, a in zip(pi_d, A_d[:, 1]) ]) for pi_d, A_d in zip(self.variables_['pi'], As) ])
+            solved = True
+        except AttributeError:
+            a = np.zeros(self.action.n_features)
+            solved = False
+
+        if solved:
+            c = self.variables_['cost'].X
+            v = (self.predict(X + a) == self.action.y_target)[0]
+            cv = (c <= self.action.cost_budget) * v
+            s = np.count_nonzero(a)
+        else: 
+            c = 0
+            v = False
+            cv = False
+            s = 0
+
+        results = {
+            'solved': solved, 
+            'y_target': self.action.y_target, 
+            'sample': x, 
+            'action': a, 
+            'counterfactual': x + a, 
+            'cost': c, 
+            'validity': v, 
+            'cost-validity': cv,
+            'sparsity': s,
+        }
+        return results
                     
-        return A, C, I
 
 
 
